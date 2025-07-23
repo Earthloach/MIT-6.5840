@@ -17,7 +17,7 @@ const (
 )
 
 type Task struct {
-	TaskType string // "Map" or "Reduce"
+	TaskType TaskType // "Map" or "Reduce"
 	TaskID   int    // Map task number or Reduce task number
 	Filename string // For Map tasks, the name of the file to process
 	ReduceID int    // For Map tasks, the number of reduce tasks

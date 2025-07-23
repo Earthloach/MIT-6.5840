@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
+	"strings"
 )
 
 // Map functions return a slice of KeyValue.
@@ -15,6 +17,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -28,11 +38,22 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
+	// Processing tasks until the coordinator stops.
+	for {
+		taskRes, err := CallAssignTask()
+		if err != nil {
+			log.Fatalf("Worker: failed to assign task: %v", err)
+		}
+		switch taskRes.Task.TaskType {
+		case MapTask:
+			execMapTask(mapf, taskRes.Task.TaskID, taskRes.Task.Filename, taskRes.Task.ReduceID)
+		case ReduceTask:
+			execReduceTask(reducef, taskRes.Task.TaskID, taskRes.Task.ReduceID)
+		default:
+			fmt.Println("Worker: finished all tasks")
+			return
+		}
+	}
 }
 
 // Execute a Map task.
@@ -61,7 +82,7 @@ func execMapTask(mapf func(string, string) []KeyValue, taskID int, filename stri
 
 	// Write the intermediate KeyValue pairs to temporary files in JSON.
 	for i := range nReduce {
-		intermediateFileName := fmt.Sprintf("mr-%d-%d", taskID, i)
+		intermediateFileName := fmt.Sprintf("mr-%v-%v", taskID, i)
 		tempFIle, err := os.CreateTemp("./", intermediateFileName)
 		if err != nil {
 			log.Fatalf("Map Task: cannot create temp file %v", intermediateFileName)
@@ -86,8 +107,78 @@ func execMapTask(mapf func(string, string) []KeyValue, taskID int, filename stri
 	CallTaskComplete(taskID)
 }
 
+// Execute a Reduce task.
+// This function reads all intermediate files for the given reduce task,
+// applies the reduce function, and writes the output to a file named "mr-out-<reduceID>".
+func execReduceTask(reducef func(string, []string) string, taskID int, reduceID int) {
+	files, err := os.ReadDir("./")
+	if err != nil {
+		log.Fatalf("Reduce Task: cannot read directory: %v", err)
+	}
 
-// Controller functions for RPC AssignTask
+	kva := []KeyValue{}
+
+	// Read all intermediate files for this reduce task.
+	for _, file := range files {
+
+		// Check if the file is an intermediate file for this reduce task
+		if file.IsDir() || !strings.HasPrefix(file.Name(), "mr-") ||
+			!strings.HasSuffix(file.Name(), fmt.Sprintf("-%d", reduceID)) {
+			continue
+		}
+
+		f, err := os.Open(file.Name())
+		if err != nil {
+			log.Fatalf("Reduce Task: cannot open %v", file.Name())
+		}
+
+		decoder := json.NewDecoder(f)
+
+		// Decode the KeyValue pairs from the file.
+		var kv KeyValue
+		for decoder.Decode(&kv) == nil {
+			kva = append(kva, kv)
+		}
+		f.Close()
+	}
+
+	fileName := fmt.Sprintf("mr-out-%d", reduceID)
+	tempFile, err := os.CreateTemp("./", fileName)
+	if err != nil {
+		log.Fatalf("Reduce Task: cannot create temp file %v", fileName)
+	}
+
+	sort.Sort(ByKey(kva))
+
+	// Group the KeyValue pairs by key and apply the reduce function.
+	// Write the output to the temporary file.
+	for i := 0; i < len(kva); {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values)
+
+		// Write the output to the temporary file.
+		fmt.Fprintf(tempFile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
+
+	tempFile.Close()
+	err = os.Rename(tempFile.Name(), fileName)
+	if err != nil {
+		log.Fatalf("Reduce Task: cannot rename temp file %v to %v", tempFile.Name(), fileName)
+	}
+	// Notify the coordinator that the task is complete.
+	CallTaskComplete(taskID)
+}
+
+// Controller function for RPC AssignTask
 func CallAssignTask() (*AssignTaskReply, error) {
 	args := AssignTaskArgs{} // Example worker ID
 	reply := AssignTaskReply{}
@@ -95,7 +186,7 @@ func CallAssignTask() (*AssignTaskReply, error) {
 	return &reply, nil
 }
 
-// Controller functions for RPC TaskComplete
+// Controller function for RPC TaskComplete
 func CallTaskComplete(taskID int) {
 	args := TaskCompleteArgs{TaskID: taskID}
 	reply := TaskCompleteReply{}
