@@ -9,21 +9,38 @@ package mr
 import "os"
 import "strconv"
 
+type TaskType int
+
+const (
+	MapTask    TaskType = iota // 0
+	ReduceTask                 // 1
+)
+
+type Task struct {
+	TaskType string // "Map" or "Reduce"
+	TaskID   int    // Map task number or Reduce task number
+	Filename string // For Map tasks, the name of the file to process
+	ReduceID int    // For Map tasks, the number of reduce tasks
+}
+
 //
 // example to show how to declare the arguments
 // and reply for an RPC.
 //
 
-type ExampleArgs struct {
-	X int
+type AssignTaskArgs struct {
+	WorkerID int // Unique ID for the worker
 }
 
-type ExampleReply struct {
-	Y int
+type AssignTaskReply struct {
+	Task Task // The task assigned to the worker
 }
 
-// Add your RPC definitions here.
+type TaskCompleteArgs struct {
+	TaskID int // The ID of the completed task
+}
 
+type TaskCompleteReply struct{}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
