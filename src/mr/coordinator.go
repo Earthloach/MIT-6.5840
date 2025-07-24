@@ -28,6 +28,7 @@ type Coordinator struct {
 	taskActive map[int]chan struct{}
 	taskId     atomic.Int64
 	wg         sync.WaitGroup
+	mu         sync.Mutex // Add mutex to protect taskActive map
 }
 
 // Assign map and reduce tasks to workers
@@ -36,7 +37,12 @@ func (c *Coordinator) AssignTask(args *AssignTaskArgs, reply *AssignTaskReply) e
 	if c.stage != AllDone {
 		task := <-c.taskQueue
 		reply.Task = task
+
+		c.mu.Lock()
 		c.taskActive[task.TaskID] = make(chan struct{})
+		taskActive := c.taskActive[task.TaskID]
+		c.mu.Unlock()
+
 		go func(taskActive chan struct{}) {
 			timer := time.NewTimer(10 * time.Second)
 			defer timer.Stop()
@@ -48,7 +54,7 @@ func (c *Coordinator) AssignTask(args *AssignTaskArgs, reply *AssignTaskReply) e
 			case <-timer.C:
 				c.taskQueue <- task
 			}
-		}(c.taskActive[task.TaskID])
+		}(taskActive)
 	} else {
 		c.Done()
 	}
@@ -61,10 +67,18 @@ func (c *Coordinator) AssignTask(args *AssignTaskArgs, reply *AssignTaskReply) e
 // If the task is not found or already completed, it returns an error.
 func (c *Coordinator) TaskComplete(args *TaskCompleteArgs, reply *TaskCompleteReply) error {
 	taskID := args.TaskID
+
+	c.mu.Lock()
 	taskActive := c.taskActive[taskID]
 	if taskActive != nil {
+		delete(c.taskActive, taskID) // Remove completed task
+	}
+	c.mu.Unlock()
+
+	if taskActive != nil {
 		taskActive <- struct{}{} // Signal that the task is complete
-		c.wg.Done()              // Decrement the wait group counter
+		close(taskActive)
+		c.wg.Done() // Decrement the wait group counter
 		return nil
 	} else {
 		return errors.New("task not found or already completed")
